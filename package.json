@@ -1,0 +1,13 @@
+{
+  "name": "pino-openobserve",
+  "version": "0.0.1",
+  "description": "Pino transport for Openobserve",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "OpenObserve",
+  "dependencies": {
+    "url": "^0.11.3"
+  }
+}
