@@ -33,7 +33,7 @@ The transport accepts an options object with the following properties:
 | streamName | Yes | - | The name of the stream to which logs should be sent. |
 | auth | Yes | `{ username: "", password: "" }` | An object with `username` and `password` properties for authenticating with the Openobserve server |
 | batchSize | No | `100` | The number of logs to include in each batch. |
-| interval | No | `1000` | The interval, in milliseconds, at which logs should be sent. |
+| timeThreshold | No | `1000` | The interval, in milliseconds, at which logs should be sent. |
 
 ## Usage
 
