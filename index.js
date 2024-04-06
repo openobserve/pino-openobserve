@@ -31,6 +31,8 @@ class OpenobserveTransport extends Transform {
       },
       batchSize: 100,
       timeThreshold: 5 * 60 * 1000,
+      silentSuccess: false,
+      silentError: false,
     };
 
     this.options = { ...defaultOptions, ...options };
@@ -84,7 +86,7 @@ class OpenobserveTransport extends Transform {
       return;
     }
 
-    const { auth } = this.options;
+    const { auth, silentSuccess, silentError } = this.options;
     const bulkLogs = this.logs.splice(0, this.options.batchSize).join('');
 
     this.apiCallInProgress = true;
@@ -99,13 +101,13 @@ class OpenobserveTransport extends Transform {
     })
       .then(async response => {
         if (response.ok) {
-          console.log('successful: ', await response.json());
+          if (!silentSuccess) console.log('successful: ', await response.json());
         } else {
-          console.error('Failed to send logs:', response.status, response.statusText);
+          if (!silentError) console.error('Failed to send logs:', response.status, response.statusText);
         }
       })
       .catch(error => {
-        console.error('Failed to send logs:', error);
+        if (!silentError) console.error('Failed to send logs:', error);
       })
       .finally(() => {
         this.apiCallInProgress = false;

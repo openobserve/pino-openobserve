@@ -34,6 +34,8 @@ The transport accepts an options object with the following properties:
 | auth | Yes | `{ username: "", password: "" }` | An object with `username` and `password` properties for authenticating with the Openobserve server |
 | batchSize | No | `100` | The number of logs to include in each batch. |
 | timeThreshold | No | `300000` (5 mins) | The interval, in milliseconds, at which logs should be sent. |
+| silentSuccess | No | false | A boolean indicating whether to suppress successful operation messages. |
+| silentError | No | false | A boolean indicating whether to suppress error messages. |
 
 ## Usage
 
