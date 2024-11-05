@@ -4,7 +4,7 @@ This is a transport for the Pino logging library that sends logs to an Openobser
 
 ## Prerequisites
 
-This package requires Node.js version 18.0.0 or later.
+This package requires Node.js version 18.0.0 or later and pino v7+
 
 ## Installation
 
