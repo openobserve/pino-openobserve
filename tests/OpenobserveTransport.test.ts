@@ -1,4 +1,4 @@
-import OpenobserveTransport from "../index";
+import OpenobserveTransport from "../src/index";
 
 describe("OpenobserveTransport", () => {
   /**
