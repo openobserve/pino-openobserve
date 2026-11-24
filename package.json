@@ -1,6 +1,6 @@
 {
   "name": "@openobserve/pino-openobserve",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Pino transport for Openobserve",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
