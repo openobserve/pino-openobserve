@@ -413,4 +413,31 @@ describe("OpenobserveTransport", () => {
       "Internal Server Error"
     );
   });
+
+  /**
+   * Verifies that each log is sent with its pino `time` as `_timestamp`, and that the batch
+   * goes out one timeThreshold after its first log however many logs follow.
+   */
+  it("should send each log's time as _timestamp one threshold after the first log", () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn(() => Promise.resolve(new Response("{}")));
+    global.fetch = fetchMock as any;
+    const timed = new OpenobserveTransport({ ...validOptions, timeThreshold: 1000, silentSuccess: true });
+
+    const a = '{"level":30,"time":1700000000000,"msg":"a"}\n';
+    const b = '{"level":30,"time":"2023-11-14T22:13:20.500Z","msg":"b"}\n';
+    const c = '{"level":30,"time":1700000000600,"msg":"c","time":42}\n';
+    const d = '{"level":30,"time":42,"msg":"d"}\n';
+    timed._transform(a + b.slice(0, 30), "utf-8", jest.fn());
+    jest.advanceTimersByTime(600);
+    timed._transform(b.slice(30) + c + d, "utf-8", jest.fn());
+    jest.advanceTimersByTime(400);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body: string = (fetchMock.mock.calls[0] as any[])[1].body;
+    expect(body.trim().split("\n").map((line) => JSON.parse(line)._timestamp)).toEqual([
+      1700000000000, "2023-11-14T22:13:20.500Z", 1700000000600, undefined,
+    ]);
+    timed.destroy();
+  });
 });

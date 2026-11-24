@@ -81,6 +81,23 @@ interface TransportOptions {
   silentError?: boolean;
 }
 
+// pino writes its own `time` right after the level, ahead of any field the app logs as `time`.
+// Only an epoch (10 to 19 digits) or RFC 3339 is taken: OpenObserve drops a record it can't place.
+const PINO_TIME =
+  /^\{"[^"\\]+":(?:\d+|"[^"\\]*"),"time":(\d{10,19}(?:\.\d+)?(?=[,}])|"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})")/;
+
+/**
+ * Adds `_timestamp` from pino's `time`, so OpenObserve keeps the time a log was written
+ * rather than the time its batch arrived. Any other line is sent unchanged.
+ */
+function withTimestamp(line: string): string {
+  const match = PINO_TIME.exec(line);
+  if (!match || line.includes('"_timestamp":')) {
+    return line;
+  }
+  return `{"_timestamp":${match[1]},${line.slice(1)}`;
+}
+
 export class OpenobserveTransport extends Transform {
   private options: TransportOptions;
   private logs: string[];
@@ -145,15 +162,15 @@ export class OpenobserveTransport extends Transform {
   }
 
   private scheduleSendLogs(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-    }
-
     const { batchSize, timeThreshold } = this.options;
     if (this.logs.length >= batchSize! && !this.apiCallInProgress) {
       this.sendLogs();
-    } else {
-      this.timer = setTimeout(() => this.sendLogs(), timeThreshold);
+    } else if (!this.timer) {
+      // later logs must not reset it: re-arming on every log held a steady stream back until batchSize
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        this.sendLogs();
+      }, timeThreshold);
     }
   }
 
@@ -163,7 +180,13 @@ export class OpenobserveTransport extends Transform {
     }
 
     const { auth, silentSuccess, silentError } = this.options;
-    const bulkLogs = this.logs.splice(0, this.options.batchSize!).join("");
+    // stamped after the join: pino's worker can split one line across two chunks
+    const bulkLogs = this.logs
+      .splice(0, this.options.batchSize!)
+      .join("")
+      .split("\n")
+      .map(withTimestamp)
+      .join("\n");
 
     this.apiCallInProgress = true;
 
