@@ -282,7 +282,7 @@ describe("OpenobserveTransport", () => {
       expect.any(String),
       expect.objectContaining({
         method: "POST",
-        body: "log1log2",
+        body: "log1\nlog2\n",
       })
     );
 
@@ -439,5 +439,72 @@ describe("OpenobserveTransport", () => {
       1700000000000, "2023-11-14T22:13:20.500Z", 1700000000600, undefined,
     ]);
     timed.destroy();
+  });
+
+  /**
+   * Verifies that batchSize counts whole lines, so a line split across two chunks
+   * is sent in one piece rather than cut between two requests.
+   */
+  it("should send a line split across chunks in one piece", async () => {
+    jest.useRealTimers();
+    const fetchMock = jest.fn(() => Promise.resolve(new Response("{}")));
+    global.fetch = fetchMock as any;
+    const split = new OpenobserveTransport({ ...validOptions, batchSize: 1, silentSuccess: true });
+
+    const a = '{"level":30,"msg":"a"}\n';
+    const b = '{"level":30,"msg":"b"}\n';
+    const c = Buffer.from('{"level":30,"msg":"é"}\n');
+    const cut = c.indexOf("é") + 1;
+    split._transform(a + b.slice(0, 10), "utf-8", jest.fn());
+    split._transform(b.slice(10), "utf-8", jest.fn());
+    split._transform(c.subarray(0, cut), "utf-8", jest.fn());
+    split._transform(c.subarray(cut), "utf-8", jest.fn());
+    await new Promise<void>((resolve) => split.end(resolve));
+
+    const bodies = fetchMock.mock.calls.map((call: any[]) => call[1].body);
+    expect(bodies).toEqual([a, b, c.toString()]);
+    split.destroy();
+  });
+
+  /**
+   * Verifies that logs still buffered when the stream ends are sent before it closes,
+   * which is what pino waits for when the app exits.
+   */
+  it("should send buffered logs when the stream ends", async () => {
+    jest.useRealTimers();
+    const fetchMock = jest.fn(() => Promise.resolve(new Response("{}")));
+    global.fetch = fetchMock as any;
+    const ending = new OpenobserveTransport({ ...validOptions, timeThreshold: 60000, silentSuccess: true });
+    const closed = new Promise((resolve) => ending.on("close", resolve));
+
+    ending.write('{"level":30,"msg":"a"}\n');
+    ending.write('{"level":30,"msg":"b"}\n');
+    ending.end();
+    await closed;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls[0] as any[])[1].body).toBe(
+      '{"level":30,"msg":"a"}\n{"level":30,"msg":"b"}\n'
+    );
+  });
+
+  /**
+   * Verifies that a 200 response reporting failed records is logged as an error,
+   * not as a success.
+   */
+  it("should report records rejected in a 200 response as an error", async () => {
+    const result = {
+      code: 200,
+      status: [{ name: "s", successful: 1, failed: 1, error: "Can't parse timestamp" }],
+    };
+    global.fetch = jest.fn(() => Promise.resolve(new Response(JSON.stringify(result))));
+    console.log = jest.fn();
+    console.error = jest.fn();
+
+    transport["logs"] = ["a", "b"];
+    await transport["sendLogs"]();
+
+    expect(console.error).toHaveBeenCalledWith("OpenObserve rejected some logs:", result.status);
+    expect(console.log).not.toHaveBeenCalled();
   });
 });
