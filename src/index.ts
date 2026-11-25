@@ -15,6 +15,7 @@
  */
 
 import { Transform, TransformCallback } from "stream";
+import { StringDecoder } from "string_decoder";
 import * as url from "url";
 
 /**
@@ -81,6 +82,16 @@ interface TransportOptions {
   silentError?: boolean;
 }
 
+/**
+ * One stream's entry in the `status` array of an OpenObserve `_multi` response
+ */
+interface StreamStatus {
+  name?: string;
+  successful?: number;
+  failed?: number;
+  error?: string;
+}
+
 // pino writes its own `time` right after the level, ahead of any field the app logs as `time`.
 // Only an epoch (10 to 19 digits) or RFC 3339 is taken: OpenObserve drops a record it can't place.
 const PINO_TIME =
@@ -98,11 +109,26 @@ function withTimestamp(line: string): string {
   return `{"_timestamp":${match[1]},${line.slice(1)}`;
 }
 
+/**
+ * The streams in an OpenObserve response that rejected records. OpenObserve answers 200
+ * when only some records fail, and reports them here.
+ */
+function rejectedStreams(result: unknown): StreamStatus[] {
+  const status = (result as { status?: unknown } | null)?.status;
+  return Array.isArray(status)
+    ? status.filter((s: StreamStatus) => (s?.failed ?? 0) > 0)
+    : [];
+}
+
 export class OpenobserveTransport extends Transform {
   private options: TransportOptions;
   private logs: string[];
+  private pending: string;
+  private decoder: StringDecoder;
   private timer: NodeJS.Timeout | null;
   private apiCallInProgress: boolean;
+  private sending: Promise<void> | null;
+  private ending: boolean;
   private apiUrl: string;
 
   constructor(options: TransportOptions) {
@@ -128,14 +154,21 @@ export class OpenobserveTransport extends Transform {
     }
 
     this.logs = [];
+    this.pending = "";
+    this.decoder = new StringDecoder("utf8");
     this.timer = null;
     this.apiCallInProgress = false;
+    this.sending = null;
+    this.ending = false;
 
     process.on("beforeExit", () => {
       if (this.logs.length > 0 && !this.apiCallInProgress) {
         this.sendLogs();
       }
     });
+
+    // nothing is ever pushed, but the readable side must end for `close`, which pino awaits at exit
+    this.resume();
 
     this.apiUrl = this.createApiUrl();
   }
@@ -152,20 +185,50 @@ export class OpenobserveTransport extends Transform {
   }
 
   _transform(
-    log: any,
+    chunk: any,
     encoding: BufferEncoding,
     callback: TransformCallback
   ): void {
-    this.logs.push(log);
+    const text =
+      typeof chunk === "string"
+        ? chunk
+        : Buffer.isBuffer(chunk)
+        ? this.decoder.write(chunk)
+        : `${JSON.stringify(chunk)}\n`;
+    // pino's worker can end a chunk partway through a line: hold the tail until the rest arrives
+    const lines = (this.pending + text).split("\n");
+    this.pending = lines.pop()!;
+    for (const line of lines) {
+      if (line.trim()) this.logs.push(line);
+    }
     this.scheduleSendLogs();
     callback();
   }
 
+  _flush(callback: TransformCallback): void {
+    this.ending = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    const rest = this.pending + this.decoder.end();
+    this.pending = "";
+    if (rest.trim()) this.logs.push(rest);
+    this.drain().then(() => callback(), callback);
+  }
+
+  private async drain(): Promise<void> {
+    while (this.sending || this.logs.length > 0) {
+      await (this.sending ?? this.sendLogs());
+    }
+  }
+
   private scheduleSendLogs(): void {
+    if (this.ending) return;
     const { batchSize, timeThreshold } = this.options;
     if (this.logs.length >= batchSize! && !this.apiCallInProgress) {
       this.sendLogs();
-    } else if (!this.timer) {
+    } else if (!this.timer && this.logs.length > 0) {
       // later logs must not reset it: re-arming on every log held a steady stream back until batchSize
       this.timer = setTimeout(() => {
         this.timer = null;
@@ -174,22 +237,26 @@ export class OpenobserveTransport extends Transform {
     }
   }
 
-  private async sendLogs(): Promise<void> {
+  private sendLogs(): Promise<void> {
     if (this.logs.length === 0 || this.apiCallInProgress) {
-      return;
+      return Promise.resolve();
     }
 
-    const { auth, silentSuccess, silentError } = this.options;
-    // stamped after the join: pino's worker can split one line across two chunks
-    const bulkLogs = this.logs
-      .splice(0, this.options.batchSize!)
-      .join("")
-      .split("\n")
-      .map(withTimestamp)
-      .join("\n");
+    const bulkLogs =
+      this.logs.splice(0, this.options.batchSize!).map(withTimestamp).join("\n") +
+      "\n";
 
     this.apiCallInProgress = true;
+    this.sending = this.post(bulkLogs).finally(() => {
+      this.apiCallInProgress = false;
+      this.sending = null;
+      this.scheduleSendLogs();
+    });
+    return this.sending;
+  }
 
+  private async post(bulkLogs: string): Promise<void> {
+    const { auth, silentSuccess, silentError } = this.options;
     try {
       const response = await fetch(this.apiUrl, {
         method: "POST",
@@ -202,21 +269,26 @@ export class OpenobserveTransport extends Transform {
         body: bulkLogs,
       });
 
-      if (response.ok) {
-        if (!silentSuccess) console.log("successful: ", await response.json());
-      } else {
+      if (!response.ok) {
         if (!silentError)
           console.error(
             "Failed to send logs:",
             response.status,
             response.statusText
           );
+        return;
+      }
+
+      const result = await response.json();
+      const rejected = rejectedStreams(result);
+      if (rejected.length > 0) {
+        if (!silentError)
+          console.error("OpenObserve rejected some logs:", rejected);
+      } else if (!silentSuccess) {
+        console.log("successful: ", result);
       }
     } catch (error) {
       if (!silentError) console.error("Failed to send logs:", error);
-    } finally {
-      this.apiCallInProgress = false;
-      this.scheduleSendLogs();
     }
   }
 }
